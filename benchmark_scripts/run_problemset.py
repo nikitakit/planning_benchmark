@@ -227,12 +227,13 @@ def gen_init_trajs(problemset, robot, n_steps, start_joints, end_joints):
         trajs.append(inittraj)
     return trajs
 
-def make_trajopt_request(n_steps, coll_coeff, dist_pen, end_joints, inittraj, use_discrete_collision):
+def make_trajopt_request(n_steps, coll_coeff, dist_pen, end_joints, inittraj, use_discrete_collision, max_iter=40):
     d = {
         "basic_info" : {
             "n_steps" : n_steps,
             "manip" : "active",
-            "start_fixed" : True
+            "start_fixed" : True,
+            "max_iter" : max_iter
         },
         "costs" : [
             {
