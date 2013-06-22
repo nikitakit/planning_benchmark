@@ -42,7 +42,13 @@ g4.add_argument("--ompl_planner_id", default = "", help="OMPL planner ID",
 g5 = parser.add_argument_group("chomp-only", "Options specific to CHOMP")
 g5.add_argument("--chomp_argstr", default="comp", help="CHOMP arg string. Can be 'comp' or 'hmc-seedXXXX'")
 
-args = parser.parse_args()
+if __name__ == "__main__":
+    args = parser.parse_args()
+else:
+    class Args(object):
+        pass
+    args = Args()
+    args.outfile = None
 
 if args.outfile is None: args.outfile = sys.stdout
 
