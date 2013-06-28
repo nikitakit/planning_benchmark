@@ -321,7 +321,7 @@ def openrave_birrt_plan(robot, group_name, active_joint_names, active_affine, en
     ret = planner.PlanPath(traj)
     t_total = time() - t_start
     if ret != openravepy.PlannerStatus.HasSolution:
-        return False, t_total, decode_rave_traj(traj), ""
+        return False, t_total, init_trajs[0], ""
     return True, t_total, decode_rave_traj(traj), "BiRRT planning successful"
 
 def smooth_traj3(traj):
