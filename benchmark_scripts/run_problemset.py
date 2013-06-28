@@ -287,9 +287,17 @@ def trajopt_plan(robot, group_name, active_joint_names, active_affine, end_joint
     dist_pen = .02
 
     def single_trial(inittraj, use_discrete_collision):
-        s = make_trajopt_request(n_steps, coll_coeff, dist_pen, end_joints, inittraj, use_discrete_collision)
-        prob = trajoptpy.ConstructProblem(s, robot.GetEnv())
-        result = trajoptpy.OptimizeProblem(prob)
+        s = make_trajopt_request(len(inittraj), coll_coeff, dist_pen, end_joints, inittraj, use_discrete_collision)
+        try:
+            prob = trajoptpy.ConstructProblem(s, robot.GetEnv())
+        except TypeError:
+            print "Construct error caught, considering optimization to have failed"
+            return inittraj, False
+        try:
+            result = trajoptpy.OptimizeProblem(prob)
+        except TypeError:
+            print "Error caught, considering optimization to have failed"
+            return inittraj, False
         traj = result.GetTraj()
         prob.SetRobotActiveDOFs()
         return traj, traj_is_safe(traj, robot) #and (use_discrete_collision or traj_no_self_collisions(traj, robot))
@@ -300,7 +308,7 @@ def trajopt_plan(robot, group_name, active_joint_names, active_affine, end_joint
     for (i_init,inittraj) in enumerate(init_trajs):
         traj, is_safe = single_trial(inittraj, True)
         if is_safe:
-            msg = "planning successful after %s initialization"%(i_init+1)
+            msg = "planning successful after {} initializations".format(i_init+1)
             success = True
             break
     t_total = time() - t_start
