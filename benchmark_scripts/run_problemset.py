@@ -3,7 +3,7 @@ parser = argparse.ArgumentParser()
 
 g0 = parser.add_argument_group('common', 'Common args')
 g0.add_argument("problemfile",type=argparse.FileType("r"), help="Problem description YAML file")
-g0.add_argument("planner", choices=["trajopt", "ompl", "chomp"], help="Planner to run")
+g0.add_argument("planner", choices=["trajopt", "ompl", "chomp", "openrave_birrt", "rrt_trajopt"], help="Planner to run")
 g0.add_argument("-o","--outfile",type=argparse.FileType("w"), help="File to dump results (generated trajectories, timing info, etc.)")
 g0.add_argument("--record_failed_problems", type=argparse.FileType("w"), help="File to save failed start/goal pairs")
 g0.add_argument("--problems", type=argparse.FileType("r"), help="ignore the problems in problemfile and use these only (good for output from --record_failed_problems)")
@@ -275,14 +275,119 @@ def make_trajopt_request(n_steps, coll_coeff, dist_pen, end_joints, inittraj, us
         "type" : "collision",
         "params" : {"coeffs" : [coll_coeff],"dist_pen" : [dist_pen], "continuous":True, "gap":2}
         })
-    
     return json.dumps(d)
 
 
-def trajopt_plan(robot, group_name, active_joint_names, active_affine, end_joints, init_trajs):
-    start_joints = robot.GetActiveDOFValues()
+def decode_rave_traj(traj):
+    return [traj.GetWaypoint(i) for i in range(traj.GetNumWaypoints())]
+def encode_rave_traj(traj, robot):
+    rave_traj = openravepy.RaveCreateTrajectory(robot.GetEnv(), '')
+    rave_traj.Init(robot.GetActiveConfigurationSpecification())
+    for i, row in enumerate(traj):
+        rave_traj.Insert(i, row)
+    return rave_traj
+def interpolate(n_steps, *waypoints):
+    return mu.interp2d(np.linspace(0,1,n_steps), np.linspace(0,1,len(waypoints)), waypoints)
 
-    n_steps = args.n_steps
+def get_tucked_arm():
+    def substitute(lst, i, num):
+        lst = lst[:]
+        lst[i] = num
+        return lst
+    pt = substitute(KITCHEN_WAYPOINTS[0], 3, 0.0)
+    pt = substitute(pt, 2, 1.4)
+    pt = substitute(pt, 4, -3.5)
+    pt = substitute(pt, 5, 0)
+    pt = substitute(pt, 6, -2)
+    
+    pt = substitute(pt, 9, 1.4)
+    pt = substitute(pt, 10, 0)
+    pt = substitute(pt, 11, -3.5)
+    pt = substitute(pt, 12, 0)
+    pt = substitute(pt, 13, -2)
+    return pt
+
+def openrave_birrt_plan(robot, group_name, active_joint_names, active_affine, end_joints, init_trajs):
+    t_start = time()
+    robot.SetActiveDOFValues(list(init_trajs[0][0]))
+    params = openravepy.Planner.PlannerParameters()
+    params.SetRobotActiveJoints(robot)
+    params.SetGoalConfig(list(end_joints))
+    planner = openravepy.RaveCreatePlanner(robot.GetEnv(), 'birrt')
+
+    planner.InitPlan(robot, params)
+    traj = openravepy.RaveCreateTrajectory(robot.GetEnv(), '')
+    ret = planner.PlanPath(traj)
+    t_total = time() - t_start
+    if ret != openravepy.PlannerStatus.HasSolution:
+        return False, t_total, decode_rave_traj(traj), ""
+    return True, t_total, decode_rave_traj(traj), "BiRRT planning successful"
+
+def smooth_traj3(traj):
+    """smooths out a trajectory. works for the living room example only"""
+    upsampled = interpolate(len(traj) * 5, *traj)
+
+    diff = np.zeros(np.asarray(upsampled[0]).shape)
+    diff_sq = np.zeros(diff.shape)
+    for i in range(1, len(upsampled)):
+        diff += abs(upsampled[i] - upsampled[i-1])
+        diff_sq += abs(upsampled[i] - upsampled[i-1]) ** 2
+    diff /= len(upsampled) - 1
+    diff_sq /= len(upsampled) - 1
+    distance = np.linalg.norm(np.maximum(0, diff[:2] - 0.3 * np.sqrt(diff_sq[:2] - (diff[:2] ** 2))))
+
+    result = [upsampled[0]]
+    old = upsampled[0]
+    for row in upsampled[1:]:
+        if np.linalg.norm((row - old)[:2]) > distance:
+            result.append(row)
+            old = row
+    if not all(traj[-1] == result[-1]):
+        result.append(traj[-1])
+    n = len(traj) * 2
+    if n < 20:
+        n = 20
+    return interpolate(n, *result)
+
+def rrt_trajopt_plan(robot, group_name, active_joint_names, active_affine, end_joints, init_trajs):
+    start, goal = init_trajs[0][0], end_joints
+    init_trajs = None # Do not use this parameter
+    assert active_affine == 11, "This planner can only be used for full-body problems"
+
+    robot.SetAffineTranslationLimits([-2, -2, -2], [7, 7, 7])
+    robot.SetAffineRotationAxisLimits([-10,0,0], [10,0,0])
+
+    def tuck_arms():
+        untuck_arms()
+        robot.SetActiveDOFValues(get_tucked_arm())
+        robot.SetActiveDOFs([], active_affine)
+    def untuck_arms():
+        rave_joint_names = [joint.GetName() for joint in robot.GetJoints()]
+        active_joint_inds = [rave_joint_names.index(name) for name in active_joint_names]
+        robot.SetActiveDOFs(active_joint_inds, active_affine)
+
+    t_start = time()
+    with robot:
+        tuck_arms()
+        start_ = start[-3:]
+        goal_ = goal[-3:]
+        _, _, base_traj, _ = openrave_birrt_plan(robot, group_name, [], active_affine, goal_, [[start_, goal_]])
+        base_traj = smooth_traj3(base_traj)
+    untuck_arms()
+    init_traj = interpolate(len(base_traj), start, goal)
+    init_traj_2 = interpolate(len(base_traj), start, goal)
+    tucked_arm = get_tucked_arm()
+    for i, row in enumerate(np.asarray(base_traj)):
+        init_traj[i, -3:] = row[:3]
+        init_traj_2[i, -3:] = row[:3]
+        if i != 0 and i != len(base_traj) - 1:
+            init_traj_2[i,:-3] = tucked_arm[:-3]
+    with robot:
+        robot.SetActiveDOFValues(start)
+        success, _, traj, msg = trajopt_plan(robot, group_name, active_joint_names, active_affine, end_joints, [init_traj, init_traj_2])
+    return success, time() - t_start, traj, msg
+
+def trajopt_plan(robot, group_name, active_joint_names, active_affine, end_joints, init_trajs):
     coll_coeff = 40
     dist_pen = .02
 
@@ -474,6 +579,10 @@ def init_env(problemset):
         # chomp needs a robot with spheres
         chomp_pr2_file = "pr2_with_spheres.robot.xml" if problemset["active_affine"] == 0 else "pr2_with_spheres_fullbody.robot.xml"
         robot2file["pr2"] = osp.join(pbc.envfile_dir, chomp_pr2_file)
+    elif args.planner == "openrave_birrt":
+        plan_func = openrave_birrt_plan
+    elif args.planner == "rrt_trajopt":
+        plan_func = rrt_trajopt_plan
 
     env.Load(osp.join(pbc.envfile_dir,problemset["env_file"]))
     env.Load(robot2file[problemset["robot_name"]])
