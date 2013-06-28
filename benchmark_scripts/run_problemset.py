@@ -178,6 +178,7 @@ def setup_ompl(env):
 
 def postsetup_trajopt(env):
     "use the ROS config file to ignore some impossible self collisions. very slight speedup"
+    return
     import xml.etree.ElementTree as ET
     robot = env.GetRobot("pr2")
     cc = trajoptpy.GetCollisionChecker(env)
