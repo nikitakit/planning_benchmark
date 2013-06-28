@@ -1,4 +1,4 @@
-import argparse,sys
+import argparse,sys, math
 parser = argparse.ArgumentParser()
 
 g0 = parser.add_argument_group('common', 'Common args')
@@ -227,7 +227,7 @@ def gen_init_trajs(problemset, robot, n_steps, start_joints, end_joints):
         trajs.append(inittraj)
     return trajs
 
-def make_trajopt_request(n_steps, coll_coeff, dist_pen, end_joints, inittraj, use_discrete_collision, max_iter=40):
+def make_trajopt_request(n_steps, coll_coeff, dist_pen, end_joints, inittraj, use_discrete_collision, max_iter=40, limit_amount=None):
     d = {
         "basic_info" : {
             "n_steps" : n_steps,
@@ -253,6 +253,17 @@ def make_trajopt_request(n_steps, coll_coeff, dist_pen, end_joints, inittraj, us
             "data" : [row.tolist() for row in inittraj]
         }
     }
+    if limit_amount is not None:
+        diffx = 0.0
+        diffy = 0.0
+        for t in range(1, len(inittraj)):
+            diffx = max(diffx, abs(inittraj[t][-3] - inittraj[t-1][-3]))
+            diffy = max(diffy, abs(inittraj[t][-2] - inittraj[t-1][-2]))
+        limit = math.sqrt(diffx**2 + diffy**2) * limit_amount
+        limits =  [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, limit, limit, 10.0]
+
+        d["constraints"].append({"type" : "joint_vel_limits", "params" : {"vals" : limits}})
+
     if use_discrete_collision:
         d["costs"].append({
             "name": "discrete_collision",
